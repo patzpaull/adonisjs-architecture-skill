@@ -731,3 +731,28 @@ export class InvoiceRepository {
 **Trade-offs:** Every repository method signature carries `tenantId`. This is intentional — it's a forcing function that makes tenant scoping impossible to forget.
 
 **Diagnostic:** If you see `MaxListenersExceededWarning` in your logs, you almost certainly have a dynamic listener registration somewhere. Search your codebase for `emitter.on` outside of `start/events.ts`.
+
+---
+
+## Decision 20: Hybrid Tracing (OTEL) + Prometheus Metrics (prom-client)
+
+**Decision:** Use `@adonisjs/otel` exclusively for distributed tracing (exported via OTLP). Use `prom-client` directly for all metrics, exposed at `GET /metrics` for Prometheus scraping. Do not use the OTEL metrics SDK.
+
+**Rationale:**
+- The OTEL metrics SDK's Prometheus exporter requires managing its own HTTP listener, which conflicts with AdonisJS's server lifecycle and complicates startup ordering.
+- `prom-client` is the de-facto standard for Prometheus in Node.js. It has a simpler API, a single `Registry` object, and zero lifecycle friction — just expose `registry.metrics()` on a route.
+- Tracing and metrics serve different purposes: traces answer "what happened in this request?", metrics answer "how is the system behaving over time?". Using the best-in-class tool for each is more pragmatic than forcing both through OTEL.
+- Sampling (reducing trace volume for high-traffic endpoints) does not affect metrics — counters and histograms capture everything regardless of whether the request was sampled for tracing.
+
+**Rejected Alternative:** Using OTEL metrics SDK with `@opentelemetry/exporter-metrics-otlp-proto`. Works end-to-end if your backend speaks OTLP (Grafana Cloud, Datadog, etc.), but adds complexity when Prometheus scraping is already in place. Revisit if the team standardizes on a pure OTLP pipeline.
+
+**Rejected Alternative:** Logging metrics to stdout and parsing with a log shipper. Brittle, high cardinality, and adds latency to the metrics pipeline.
+
+**Implementation summary:**
+1. `otel.ts` (project root) — imports `@adonisjs/otel/init` with `metricReaders: []` (metrics disabled in OTEL config).
+2. `app/services/otel_service.ts` — static class owning the Prometheus `Registry`, all `Counter`/`Gauge`/`Histogram` definitions, the OTEL `tracer`, and the `withSpan()` helper.
+3. `app/middleware/http_metric_middleware.ts` — server middleware recording per-request Prometheus metrics.
+4. `app/middleware/otel_enrich.ts` — router middleware enriching the active OTEL span with user/request attributes.
+5. `start/otel_metrics.ts` — boot-time Lucid `db:query` event listeners for database telemetry.
+
+See `references/observability.md` for full implementation details.

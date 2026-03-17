@@ -6,6 +6,8 @@ description: >
   service layers, repository patterns, domain-driven design, or mentions how to organize, which pattern to use,
   best practices, or architecture. Also trigger when the user is creating controllers, services, repositories,
   actions, DTOs, validators, events, listeners, state machines, or any domain logic classes in an AdonisJS v6 project.
+  Also trigger for observability, telemetry, tracing, metrics, OpenTelemetry, OTEL, Prometheus, prom-client,
+  distributed tracing, spans, instrumentation, monitoring, or setting up a /metrics endpoint.
   Even if the user doesn't explicitly say "architecture," use this skill whenever structural or organizational
   decisions are being made in an AdonisJS v6 codebase.
 ---
@@ -27,11 +29,12 @@ Opinionated, service-oriented architecture for AdonisJS v6 API kit applications.
 
 **Instruction:** When this skill activates, immediately read the relevant reference file(s) for the task at hand using the Read tool *before* generating any output.
 
-- **Architecture decisions & rationale** → Read `references/decisions.md` (Decisions 1–12 on structure, 13–18 on performance & memory safety)
+- **Architecture decisions & rationale** → Read `references/decisions.md` (Decisions 1–12 on structure, 13–18 on performance & memory safety, 19 on multi-tenancy, 20 on observability)
 - **Code examples for each layer** → Read `references/code-examples.md`
 - **Testing patterns** → Read `references/testing.md`
 - **State machine patterns** → Read `references/state-machines.md`
 - **Performance & memory safety** → Read `references/performance.md`
+- **OpenTelemetry, tracing & Prometheus metrics** → Read `references/observability.md`
 
 ## Project Structure
 
@@ -72,10 +75,15 @@ app/
 └── providers/             # Service providers for container bindings
     └── repository_provider.ts
 
+otel.ts                    # OTEL init — must be first import in bin/server.ts
+config/
+└── otel.ts                # @adonisjs/otel trace exporter + sampling configuration
+
 start/
 ├── events.ts              # Event → Listener registrations (emitter.on calls)
 ├── routes.ts              # Route definitions
-└── kernel.ts              # Global middleware registration
+├── kernel.ts              # Global middleware registration
+└── otel_metrics.ts        # DB query telemetry listeners + periodic gauge updates
 
 database/
 ├── migrations/            # Lucid migration files
