@@ -194,24 +194,66 @@ export class InvoiceRepository {
 
 ---
 
-## 4. DTO Example
+## 4. DTO Examples
+
+DTOs live in `app/dtos/` organised by domain subdirectory. Three types are used:
+- **Input DTOs** — data flowing into a service (from validator + controller-attached context)
+- **Response DTOs** — output shapes when the Lucid model is insufficient
+- **Nested DTOs** — sub-shapes used inside input or response DTOs
+
+### Folder structure
+
+```
+app/dtos/
+├── payments/
+│   ├── record_payment_dto.ts
+│   └── payment_response_dto.ts
+├── invoices/
+│   └── invoice_dto.ts
+└── tasks/
+    └── task_dto.ts
+```
+
+### Input DTO — with controller-attached context
 
 ```typescript
-// app/dtos/invoice_dto.ts
-import type { DateTime } from 'luxon'
+// app/dtos/payments/record_payment_dto.ts
+import type { PaymentMethod } from '#enums/payment_method'
 
-export interface StoreInvoiceDto {
-  customerId: string
+export interface RecordPaymentDto {
+  // From request body (validated by VineJS)
+  invoiceId: string
   amount: number
-  dueDate: DateTime
-  lineItems?: LineItemDto[]
+  method: PaymentMethod
+  reference?: string
+  // Attached by the controller from auth context — never from request.body()
+  recordedByUserId: string
+  tenantId: string
 }
+```
 
-export interface UpdateInvoiceDto {
-  amount?: number
-  dueDate?: DateTime
-  lineItems?: LineItemDto[]
+**Controller building the enriched DTO:**
+
+```typescript
+// app/controllers/payments_controller.ts
+async store({ request, auth, response }: HttpContext) {
+  const data = await request.validateUsing(storePaymentValidator)
+
+  const dto: RecordPaymentDto = {
+    ...data,
+    recordedByUserId: auth.user!.id,
+    tenantId: auth.user!.tenantId,
+  }
+
+  const payment = await this.paymentService.recordPayment(dto)
+  return response.created(payment)
 }
+```
+
+### Input DTO — with nested shape
+
+```typescript
+// app/dtos/invoices/invoice_dto.ts
 
 export interface LineItemDto {
   description: string
@@ -219,14 +261,127 @@ export interface LineItemDto {
   unitPrice: number
 }
 
-// app/dtos/payment_dto.ts
-export interface RecordPaymentDto {
+export interface StoreInvoiceDto {
+  customerId: string
+  amount: number
+  dueDate: string          // ISO date string — convert to DateTime inside the service
+  lineItems?: LineItemDto[]
+  // Context:
+  createdByUserId: string
+}
+
+export interface UpdateInvoiceDto {
+  amount?: number
+  dueDate?: string
+  lineItems?: LineItemDto[]
+}
+```
+
+### Response DTO — when model shape is insufficient
+
+Return a plain DTO from the service (never from the controller) when:
+- The response includes computed fields not stored in the DB
+- Fields are aggregated from multiple models
+- A subset or projection of the model is needed
+
+```typescript
+// app/dtos/payments/payment_response_dto.ts
+
+export interface PaymentResponseDto {
+  id: string
   invoiceId: string
   amount: number
-  method: PaymentMethod
-  reference?: string
-  paidAt?: DateTime
+  method: string
+  reference: string | null
+  paidAt: string             // ISO string — Luxon DateTime serialised here, not in controller
+  invoiceBalance: number     // computed: invoice.amount - total payments
+  receiptUrl: string         // constructed at serialization time
 }
+```
+
+**Service building the response DTO:**
+
+```typescript
+// app/services/payment_service.ts
+async recordPayment(dto: RecordPaymentDto): Promise<PaymentResponseDto> {
+  return db.transaction(async (trx) => {
+    const invoice = await this.invoiceRepo.findOrFail(dto.invoiceId, trx)
+    const payment = await this.paymentRepo.create(dto, trx)
+    const balance = await this.invoiceRepo.remainingBalance(invoice.id, trx)
+
+    return {
+      id: payment.id,
+      invoiceId: payment.invoiceId,
+      amount: payment.amount,
+      method: payment.method,
+      reference: payment.reference ?? null,
+      paidAt: payment.paidAt.toISO()!,
+      invoiceBalance: balance,
+      receiptUrl: `/receipts/${payment.id}`,
+    }
+  })
+}
+```
+
+### Complex input DTO — real-world task completion
+
+```typescript
+// app/dtos/tasks/task_dto.ts
+import type { ACCondition } from '#enums/ac_condition'
+import type { TaskStatus } from '#enums/task_status'
+
+export interface TaskWorkCompleteDto {
+  taskId: number
+  taskWorkId: number
+  status: TaskStatus
+  note?: string | null
+  reasonForReschedule?: string | null
+  acCondition?: ACCondition | null
+  completedAt?: Date | null
+  newRescheduledDate?: Date | null
+  wifiModuleId?: number | null
+  iduSn?: string | null
+  oduSn?: string | null
+  iduModel?: string | null
+  oduModel?: string | null
+  images: { type: 'before' | 'after' | 'longladder'; image: string }[]
+  sendNotification?: boolean | null
+  taskQuestions?: { taskQuestionId: number; taskQuestionChoiceId: number }[]
+  taskSpareParts?: { sparePartId: number; quantity: number }[]
+  taskMaterials?: { name: string; value: number; unit: string; category: string }[]
+  // Context:
+  completedByUserId: string
+}
+
+export interface TaskCreateDto {
+  customerContractId: number | null
+  description: string | null
+  iduSn: string | null
+  iduModel: string | null
+  oduSn: string | null
+  oduModel: string | null
+  assetTypeId: number | null
+  // Context:
+  assignedByUserId: string
+}
+```
+
+### `package.json` subpath import
+
+```json
+{
+  "imports": {
+    "#dtos/*": "./app/dtos/*.js"
+  }
+}
+```
+
+Usage:
+
+```typescript
+import type { RecordPaymentDto } from '#dtos/payments/record_payment_dto'
+import type { StoreInvoiceDto, LineItemDto } from '#dtos/invoices/invoice_dto'
+import type { TaskWorkCompleteDto } from '#dtos/tasks/task_dto'
 ```
 
 ---
