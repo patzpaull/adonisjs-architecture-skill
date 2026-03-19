@@ -33,12 +33,13 @@ cp -r adonisjs-architecture-skill .claude/skills/adonisjs-architecture
 
 | File | Contents |
 |------|----------|
-| `SKILL.md` | Core architecture rules, layer responsibilities, DI strategy, conventions |
+| `SKILL.md` | Core architecture rules, layer responsibilities, DI strategy, conventions, DTO organisation |
 | `code-examples.md` | Runnable examples for every layer (controllers, services, repos, DTOs, events, state machines, config) |
-| `decisions.md` | 18 architectural decisions with rationale, trade-offs, and GOOD/BAD examples |
+| `decisions.md` | 20 architectural decisions with rationale, trade-offs, and GOOD/BAD examples |
 | `performance.md` | Memory safety rules, transaction patterns, singleton registration, benchmarks |
 | `state-machines.md` | Lightweight state machine pattern with guarded transitions and testing |
 | `testing.md` | Unit, integration, and functional test patterns using Japa |
+| `observability.md` | OpenTelemetry + Prometheus hybrid tracing and metrics (OtelService, HTTP metrics middleware, DB query instrumentation, `/metrics` endpoint) |
 
 ## When the Skill Activates
 
@@ -48,6 +49,7 @@ Claude will use this skill automatically when you're working on AdonisJS v6 code
 - Creating controllers, services, repositories, actions, DTOs, validators, events, or listeners
 - Making structural or organizational decisions in an AdonisJS v6 codebase
 - Asking about separation of concerns, DI, state machines, or domain-driven design
+- Working with observability, OpenTelemetry, Prometheus metrics, tracing, or instrumentation
 
 ## Key Principles
 
@@ -56,4 +58,4 @@ Claude will use this skill automatically when you're working on AdonisJS v6 code
 3. **Repositories own data access** — all Lucid queries live here
 4. **Domain objects are pure** — no DB, no HTTP awareness
 5. **Events decouple side effects** — downstream consequences go via listeners
-6. **DTOs cross layer boundaries** — never pass raw `request.all()`
+6. **DTOs cross layer boundaries** — never pass raw `request.all()`; organise by domain in `app/dtos/`

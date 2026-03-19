@@ -101,19 +101,40 @@ export interface PaymentGateway {
 
 ---
 
-## Decision 6: VineJS Validators Produce DTOs
+## Decision 6: DTOs Organised by Domain in `app/dtos/`
 
-**Decision:** Request validation happens at the controller boundary using VineJS. Validators produce typed output that acts as the DTO for the service layer.
+**Decision:** All explicit Data Transfer Objects live in `app/dtos/` organised by **domain subdirectory**. Three categories are used: input DTOs (commands into a service), response DTOs (output shapes from a service), and nested DTOs (sub-shapes reused inside others).
+
+```
+app/dtos/
+├── payments/
+│   ├── record_payment_dto.ts    # Input DTO
+│   └── payment_response_dto.ts  # Response DTO
+├── invoices/
+│   └── invoice_dto.ts           # StoreInvoiceDto, UpdateInvoiceDto, LineItemDto
+└── tasks/
+    └── task_dto.ts              # TaskWorkCompleteDto, TaskCreateDto
+```
 
 **Rationale:**
-- Single validation point — data is validated once, at entry.
-- VineJS infers TypeScript types from the schema, giving you a typed DTO for free.
-- Services receive pre-validated data and can trust it without re-checking.
+- Flat `app/dtos/` works for 2–3 DTOs but becomes hard to navigate at scale. Domain subdirectories mirror how the rest of `app/` is mentally partitioned.
+- Grouping input + response DTOs for a domain in the same directory makes cross-referencing them trivial.
+- A consistent file name (`record_payment_dto.ts`) and type name convention (`RecordPaymentDto`, `PaymentResponseDto`) removes ambiguity across the team.
+
+**Naming conventions:**
+
+| Category | File name | Interface name |
+|----------|-----------|----------------|
+| Input (create) | `store_invoice_dto.ts` or `invoice_dto.ts` | `StoreInvoiceDto` |
+| Input (update) | same file | `UpdateInvoiceDto` |
+| Input (command) | `record_payment_dto.ts` | `RecordPaymentDto` |
+| Response/output | `payment_response_dto.ts` | `PaymentResponseDto` |
+| Nested shape | same file as parent | `LineItemDto` |
+
+**When VineJS inference is enough (no explicit DTO file needed):**
 
 ```typescript
 // app/validators/store_payment_validator.ts
-import vine from '@vinejs/vine'
-
 export const storePaymentValidator = vine.compile(
   vine.object({
     invoice_id: vine.string().uuid(),
@@ -123,13 +144,55 @@ export const storePaymentValidator = vine.compile(
   })
 )
 
-// In controller — validated output is the DTO
+// In controller — VineJS inferred type IS the DTO
 const data = await request.validateUsing(storePaymentValidator)
-// `data` is typed as { invoice_id: string, amount: number, method: 'cash' | ... }
-const payment = await paymentService.processPayment(data)
+// data: { invoice_id: string; amount: number; method: 'cash' | ... }
+await paymentService.processPayment(data)
 ```
 
-**When to use explicit DTO classes:** When you need to transform or enrich validated data before passing to the service (e.g., resolving a user from a token, attaching tenant context). Create a simple class or interface in `app/dtos/`.
+**When an explicit DTO in `app/dtos/` is required:**
+
+1. You need to attach context the request body doesn't contain (`userId`, `tenantId`, resolved entities).
+2. The service method signature needs to be documented and stable (shared by multiple controllers or actions).
+3. The output shape differs from the Lucid model (computed fields, projections, aggregates).
+
+```typescript
+// Explicit input DTO — enriched with auth context in the controller
+export interface RecordPaymentDto {
+  invoiceId: string
+  amount: number
+  method: PaymentMethod
+  reference?: string
+  recordedByUserId: string   // from auth.user — not in request body
+  tenantId: string           // from auth.user — not in request body
+}
+
+// Controller building the DTO:
+const data = await request.validateUsing(storePaymentValidator)
+const dto: RecordPaymentDto = {
+  ...data,
+  recordedByUserId: auth.user!.id,
+  tenantId: auth.user!.tenantId,
+}
+await paymentService.recordPayment(dto)
+```
+
+**Subpath import alias (`package.json`):**
+
+```json
+"imports": {
+  "#dtos/*": "./app/dtos/*.js"
+}
+```
+
+```typescript
+import type { RecordPaymentDto } from '#dtos/payments/record_payment_dto'
+import type { StoreInvoiceDto } from '#dtos/invoices/invoice_dto'
+```
+
+**Rejected Alternative:** Flat `app/dtos/` with all files at the root. Simple at first; leads to a long undifferentiated list of files as the app grows.
+
+**Rejected Alternative:** Defining DTOs inline in the service file. Hides the contract; cannot be imported by controllers or actions without a circular dependency risk.
 
 ---
 
@@ -731,3 +794,28 @@ export class InvoiceRepository {
 **Trade-offs:** Every repository method signature carries `tenantId`. This is intentional — it's a forcing function that makes tenant scoping impossible to forget.
 
 **Diagnostic:** If you see `MaxListenersExceededWarning` in your logs, you almost certainly have a dynamic listener registration somewhere. Search your codebase for `emitter.on` outside of `start/events.ts`.
+
+---
+
+## Decision 20: Hybrid Tracing (OTEL) + Prometheus Metrics (prom-client)
+
+**Decision:** Use `@adonisjs/otel` exclusively for distributed tracing (exported via OTLP). Use `prom-client` directly for all metrics, exposed at `GET /metrics` for Prometheus scraping. Do not use the OTEL metrics SDK.
+
+**Rationale:**
+- The OTEL metrics SDK's Prometheus exporter requires managing its own HTTP listener, which conflicts with AdonisJS's server lifecycle and complicates startup ordering.
+- `prom-client` is the de-facto standard for Prometheus in Node.js. It has a simpler API, a single `Registry` object, and zero lifecycle friction — just expose `registry.metrics()` on a route.
+- Tracing and metrics serve different purposes: traces answer "what happened in this request?", metrics answer "how is the system behaving over time?". Using the best-in-class tool for each is more pragmatic than forcing both through OTEL.
+- Sampling (reducing trace volume for high-traffic endpoints) does not affect metrics — counters and histograms capture everything regardless of whether the request was sampled for tracing.
+
+**Rejected Alternative:** Using OTEL metrics SDK with `@opentelemetry/exporter-metrics-otlp-proto`. Works end-to-end if your backend speaks OTLP (Grafana Cloud, Datadog, etc.), but adds complexity when Prometheus scraping is already in place. Revisit if the team standardizes on a pure OTLP pipeline.
+
+**Rejected Alternative:** Logging metrics to stdout and parsing with a log shipper. Brittle, high cardinality, and adds latency to the metrics pipeline.
+
+**Implementation summary:**
+1. `otel.ts` (project root) — imports `@adonisjs/otel/init` with `metricReaders: []` (metrics disabled in OTEL config).
+2. `app/services/otel_service.ts` — static class owning the Prometheus `Registry`, all `Counter`/`Gauge`/`Histogram` definitions, the OTEL `tracer`, and the `withSpan()` helper.
+3. `app/middleware/http_metric_middleware.ts` — server middleware recording per-request Prometheus metrics.
+4. `app/middleware/otel_enrich.ts` — router middleware enriching the active OTEL span with user/request attributes.
+5. `start/otel_metrics.ts` — boot-time Lucid `db:query` event listeners for database telemetry.
+
+See `references/observability.md` for full implementation details.
